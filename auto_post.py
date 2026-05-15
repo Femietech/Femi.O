@@ -1,7 +1,7 @@
 """
 auto_post.py
 Reads config.json → generates post via Gemini → fetches images from Unsplash
-→ injects images into post body → publishes to Blogger.
+→ injects images into post body → publishes to Blogger via OAuth2 refresh token.
 Run by GitHub Actions twice daily.
 """
 
@@ -11,7 +11,8 @@ import datetime
 import re
 import requests
 import google.generativeai as genai
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 
@@ -28,17 +29,41 @@ HERO_IMAGE   = config.get("hero_image", True)
 INLINE_IMGS  = config.get("inline_images", 2)
 
 # ── Env vars (set as GitHub Secrets) ─────────────────────────────────────────
-GEMINI_API_KEY       = os.environ["GEMINI_API_KEY"]
-BLOGGER_BLOG_ID      = os.environ["BLOGGER_BLOG_ID"]
-SERVICE_ACCOUNT_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
-UNSPLASH_ACCESS_KEY  = os.environ["UNSPLASH_ACCESS_KEY"]
+GEMINI_API_KEY        = os.environ["GEMINI_API_KEY"]
+BLOGGER_BLOG_ID       = os.environ["BLOGGER_BLOG_ID"]
+UNSPLASH_ACCESS_KEY   = os.environ["UNSPLASH_ACCESS_KEY"]
+GOOGLE_CLIENT_ID      = os.environ["GOOGLE_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET  = os.environ["GOOGLE_CLIENT_SECRET"]
+GOOGLE_REFRESH_TOKEN  = os.environ["GOOGLE_REFRESH_TOKEN"]
 
 
-# ── 1. Fetch images from Unsplash ─────────────────────────────────────────────
-def fetch_unsplash_images(query, count=3):
+# ── 1. Build Blogger credentials from OAuth2 refresh token ───────────────────
+def get_blogger_service():
     """
-    Returns a list of dicts: {url, alt, photographer, profile_url}
-    Falls back to empty list on any error so the post still publishes.
+    Uses your Client ID, Client Secret, and Refresh Token to get a fresh
+    access token automatically. No service account needed.
+    """
+    creds = Credentials(
+        token=None,                          # no access token yet — will be fetched
+        refresh_token=GOOGLE_REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=["https://www.googleapis.com/auth/blogger"],
+    )
+
+    # Refresh to get a valid access token
+    creds.refresh(Request())
+    print("🔑 OAuth2 token refreshed successfully.")
+
+    return build("blogger", "v3", credentials=creds)
+
+
+# ── 2. Fetch images from Unsplash ─────────────────────────────────────────────
+def fetch_unsplash_images(query, count=1):
+    """
+    Returns a list of image dicts. Falls back to [] on any error
+    so the post still publishes without images.
     """
     try:
         resp = requests.get(
@@ -63,45 +88,46 @@ def fetch_unsplash_images(query, count=3):
                 "photographer": r["user"]["name"],
                 "profile_url": r["user"]["links"]["html"],
             })
-        print(f"🖼️  Fetched {len(images)} image(s) for query: '{query}'")
+        print(f"🖼️  Fetched {len(images)} image(s) for: '{query}'")
         return images
     except Exception as e:
-        print(f"⚠️  Unsplash fetch failed ({e}), continuing without images.")
+        print(f"⚠️  Unsplash fetch failed ({e}), skipping images.")
         return []
 
 
 def build_image_html(img, size="hero"):
     """
-    Returns an HTML block for the image with Unsplash attribution.
-    size: 'hero' = full-width banner | 'inline' = centred mid-content
+    Builds an HTML image block with required Unsplash attribution.
+    size: 'hero' = full-width banner | 'inline' = mid-content image
     """
     attribution = (
         f'Photo by <a href="{img["profile_url"]}?utm_source=auto_blog&utm_medium=referral" '
         f'target="_blank">{img["photographer"]}</a> on '
-        f'<a href="https://unsplash.com/?utm_source=auto_blog&utm_medium=referral" target="_blank">Unsplash</a>'
+        f'<a href="https://unsplash.com/?utm_source=auto_blog&utm_medium=referral" '
+        f'target="_blank">Unsplash</a>'
     )
 
     if size == "hero":
         return f"""
-<div style="width:100%;margin:0 0 28px 0;border-radius:12px;overflow:hidden;">
+<div style="width:100%;margin:0 0 32px 0;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.12);">
   <img src="{img['url']}"
        alt="{img['alt']}"
-       style="width:100%;height:420px;object-fit:cover;display:block;" />
-  <p style="font-size:11px;color:#888;margin:6px 0 0 4px;">{attribution}</p>
+       style="width:100%;height:440px;object-fit:cover;display:block;" />
+  <p style="font-size:11px;color:#999;margin:6px 0 0 6px;font-style:italic;">{attribution}</p>
 </div>
 """
     else:
         return f"""
-<div style="margin:32px auto;max-width:720px;border-radius:10px;overflow:hidden;">
+<div style="margin:36px auto;max-width:680px;border-radius:10px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.10);">
   <img src="{img['url']}"
        alt="{img['alt']}"
-       style="width:100%;height:320px;object-fit:cover;display:block;" />
-  <p style="font-size:11px;color:#888;margin:6px 0 0 4px;">{attribution}</p>
+       style="width:100%;height:300px;object-fit:cover;display:block;" />
+  <p style="font-size:11px;color:#999;margin:6px 0 0 6px;font-style:italic;">{attribution}</p>
 </div>
 """
 
 
-# ── 2. Generate post with Gemini ──────────────────────────────────────────────
+# ── 3. Generate post with Gemini ──────────────────────────────────────────────
 def generate_post():
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
@@ -124,8 +150,8 @@ Requirements:
 - Make it feel fresh — pick a specific angle within the topic
 - End with a call-to-action or thought-provoking question for readers
 - Use HTML formatting: <h2> for subheadings, <p> for paragraphs, <strong> for emphasis, <ul>/<li> for lists where relevant
-- Also provide a short hero_query (3-5 words) that would find a great Unsplash photo for the post
-- Provide {INLINE_IMGS} additional inline_queries for mid-article images (3-5 words each, visually distinct)
+- Provide a short hero_query (3-5 words) that finds a great Unsplash photo representing the post
+- Provide {INLINE_IMGS} additional inline_queries for mid-article images (3-5 words each, visually distinct from each other)
 
 Respond in this EXACT JSON format (no markdown, no code fences):
 {{
@@ -140,6 +166,7 @@ Respond in this EXACT JSON format (no markdown, no code fences):
     response = model.generate_content(prompt)
     raw = response.text.strip()
 
+    # Strip markdown fences if Gemini adds them
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -156,11 +183,11 @@ Respond in this EXACT JSON format (no markdown, no code fences):
     )
 
 
-# ── 3. Inject images into post body ──────────────────────────────────────────
+# ── 4. Inject images into post body ──────────────────────────────────────────
 def inject_images(body, hero_img, inline_imgs):
     """
-    Hero image → top of post.
-    Inline images → inserted after every 2nd <h2> section.
+    - Hero image injected at the very top
+    - Inline images inserted after every 2nd <h2> heading
     """
     result = body
 
@@ -187,16 +214,8 @@ def inject_images(body, hero_img, inline_imgs):
     return result
 
 
-# ── 4. Publish to Blogger ─────────────────────────────────────────────────────
-def publish_to_blogger(title, body, labels):
-    sa_info = json.loads(SERVICE_ACCOUNT_JSON)
-    credentials = service_account.Credentials.from_service_account_info(
-        sa_info,
-        scopes=["https://www.googleapis.com/auth/blogger"]
-    )
-
-    service = build("blogger", "v3", credentials=credentials)
-
+# ── 5. Publish to Blogger ─────────────────────────────────────────────────────
+def publish_to_blogger(service, title, body, labels):
     post = service.posts().insert(
         blogId=BLOGGER_BLOG_ID,
         body={"title": title, "content": body, "labels": labels},
@@ -209,23 +228,32 @@ def publish_to_blogger(title, body, labels):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"🔄 Generating post on topic: {TOPIC}")
+    print(f"🔄 Topic: {TOPIC}")
 
+    # Auth
+    service = get_blogger_service()
+
+    # Generate content
     title, body, labels, hero_query, inline_queries = generate_post()
     print(f"📝 Title: {title}")
-    print(f"🔍 Image queries → Hero: '{hero_query}' | Inline: {inline_queries}")
+    print(f"🔍 Queries → Hero: '{hero_query}' | Inline: {inline_queries}")
 
+    # Fetch hero image
     hero_img = None
     if HERO_IMAGE:
         imgs = fetch_unsplash_images(hero_query, count=1)
         hero_img = imgs[0] if imgs else None
 
+    # Fetch inline images
     inline_img_list = []
     for q in inline_queries[:INLINE_IMGS]:
         imgs = fetch_unsplash_images(q, count=1)
         if imgs:
             inline_img_list.append(imgs[0])
 
+    # Assemble final post
     final_body = inject_images(body, hero_img, inline_img_list)
-    url = publish_to_blogger(title, final_body, labels)
+
+    # Publish
+    url = publish_to_blogger(service, title, final_body, labels)
     print(f"🚀 Live at: {url}")
