@@ -7,7 +7,7 @@ on:
     # 7:00 PM UTC = 8:00 PM Lagos
     - cron: "0 19 * * *"
 
-  # Manual trigger from Actions tab — useful for testing
+  # Manual trigger — use this to test before going live
   workflow_dispatch:
 
 jobs:
@@ -30,6 +30,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: python scripts/auto_post.py
