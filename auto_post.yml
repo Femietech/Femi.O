@@ -1,0 +1,35 @@
+name: Auto Blog Post
+
+on:
+  schedule:
+    # 7:00 AM UTC = 8:00 AM Lagos (WAT = UTC+1)
+    - cron: "0 7 * * *"
+    # 7:00 PM UTC = 8:00 PM Lagos
+    - cron: "0 19 * * *"
+
+  # Manual trigger from Actions tab — useful for testing
+  workflow_dispatch:
+
+jobs:
+  publish-post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run auto post script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+        run: python scripts/auto_post.py

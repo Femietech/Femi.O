@@ -1,0 +1,10 @@
+{
+  "blog_topic": "Personal Finance and Wealth Building",
+  "blog_style": "informative, engaging, practical with actionable tips",
+  "target_audience": "young African professionals",
+  "post_language": "English",
+  "word_count": 800,
+  "hero_image": true,
+  "inline_images": 2,
+  "notes": "hero_image: true/false — controls the banner photo at top. inline_images: 0-3 — images injected between sections. Change blog_topic anytime; next run picks it up."
+}
