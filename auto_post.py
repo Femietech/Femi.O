@@ -1,46 +1,61 @@
-# GitHub Actions workflow for autonomous blog posting
-name: AutoBlog Twice Daily
+# This script publishes a post to Blogspot using the Blogger API.
+# It will be called by GitHub Actions after generating a post.
 
-on:
-  schedule:
-    - cron: '0 6,18 * * *'  # Runs at 06:00 and 18:00 UTC daily
-  workflow_dispatch:
+import sys
+import os
+import json
+import requests
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
-jobs:
-  autoblog:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+SCOPES = ['https://www.googleapis.com/auth/blogger']
+BLOG_ID = os.environ.get('BLOG_ID')  # Set this as a GitHub secret or env var
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+# Credentials from environment or secrets
+CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
+REFRESH_TOKEN = os.environ.get('GOOGLE_REFRESH_TOKEN')
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Add any required pip installs here
+def get_access_token():
+    creds = Credentials(
+        None,
+        refresh_token=REFRESH_TOKEN,
+        token_uri='https://oauth2.googleapis.com/token',
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        scopes=SCOPES
+    )
+    creds.refresh(Request())
+    return creds.token
 
-      - name: Generate blog post
-        run: python generate_post.py
+def publish_to_blogspot(html_file):
+    if not BLOG_ID:
+        print("BLOG_ID environment variable not set.")
+        sys.exit(1)
+    access_token = get_access_token()
+    with open(html_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    # Use filename as title
+    title = os.path.basename(html_file).split('-', 1)[-1].replace('.html', '').replace('-', ' ').title()
+    url = f"https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts/"
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+    }
+    data = {
+        'kind': 'blogger#post',
+        'title': title,
+        'content': content,
+    }
+    resp = requests.post(url, headers=headers, data=json.dumps(data))
+    if resp.status_code == 200:
+        print(f"Successfully published post: {title}")
+    else:
+        print(f"Failed to publish post: {resp.status_code} {resp.text}")
+        sys.exit(1)
 
-      - name: Find latest post
-        id: find_post
-        run: |
-          latest_post=$(ls -t posts/*.html | head -n1)
-          echo "latest_post=$latest_post" >> $GITHUB_OUTPUT
-
-      - name: Publish to Blogspot
-        run: python publish_post.py ${{ steps.find_post.outputs.latest_post }}
-        env:
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-
-      - name: Commit new post
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add posts/*.html
-          git commit -m "Add new blog post" || echo "No changes to commit"
-          git push
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python publish_post.py <html_file>")
+        sys.exit(1)
+    publish_to_blogspot(sys.argv[1])
